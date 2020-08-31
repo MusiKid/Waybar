@@ -83,13 +83,16 @@ waybar::modules::Network::Network(const std::string &id, const Json::Value &conf
     : ALabel(config, "network", id, "{ifname}", 60),
       ifid_(-1),
       family_(config["family"] == "ipv6" ? AF_INET6 : AF_INET),
+      efd_(-1),
+      ev_fd_(-1),
       cidr_(-1),
       signal_strength_dbm_(0),
       signal_strength_(0),
 #ifdef WANT_RFKILL
       rfkill_{RFKILL_TYPE_WLAN},
 #endif
-      frequency_(0) {
+      frequency_(0)
+{
   auto down_octets = read_netstat(BANDWIDTH_CATEGORY, BANDWIDTH_DOWN_TOTAL_KEY);
   auto up_octets = read_netstat(BANDWIDTH_CATEGORY, BANDWIDTH_UP_TOTAL_KEY);
   if (down_octets) {
@@ -119,6 +122,14 @@ waybar::modules::Network::Network(const std::string &id, const Json::Value &conf
 }
 
 waybar::modules::Network::~Network() {
+  if (ev_fd_ > -1) {
+    eventfd_write(ev_fd_, 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    close(ev_fd_);
+  }
+  if (efd_ > -1) {
+    close(efd_);
+  }
   if (ev_sock_ != nullptr) {
     nl_socket_drop_membership(ev_sock_, RTNLGRP_LINK);
     if (family_ == AF_INET) {
@@ -150,6 +161,30 @@ void waybar::modules::Network::createEventSocket() {
   } else {
     nl_socket_add_membership(ev_sock_, RTNLGRP_IPV6_IFADDR);
   }
+  efd_ = epoll_create1(EPOLL_CLOEXEC);
+  if (efd_ < 0) {
+    throw std::runtime_error("Can't create epoll");
+  }
+  {
+    ev_fd_ = eventfd(0, EFD_NONBLOCK);
+    struct epoll_event event;
+    memset(&event, 0, sizeof(event));
+    event.events = EPOLLIN | EPOLLET;
+    event.data.fd = ev_fd_;
+    if (epoll_ctl(efd_, EPOLL_CTL_ADD, ev_fd_, &event) == -1) {
+      throw std::runtime_error("Can't add epoll event");
+    }
+  }
+  {
+    auto fd = nl_socket_get_fd(ev_sock_);
+    struct epoll_event event;
+    memset(&event, 0, sizeof(event));
+    event.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
+    event.data.fd = fd;
+    if (epoll_ctl(efd_, EPOLL_CTL_ADD, fd, &event) == -1) {
+      throw std::runtime_error("Can't add epoll event");
+    }
+  }
 }
 
 void waybar::modules::Network::createInfoSocket() {
@@ -162,7 +197,7 @@ void waybar::modules::Network::createInfoSocket() {
   }
   nl80211_id_ = genl_ctrl_resolve(sock_, "nl80211");
   if (nl80211_id_ < 0) {
-    spdlog::warn("Can't resolve nl80211 interface");
+    throw std::runtime_error("Can't resolve nl80211 interface");
   }
 }
 
@@ -189,9 +224,18 @@ void waybar::modules::Network::worker() {
       }
     }
   };
-#else
-    spdlog::warn("Waybar has been built without rfkill support.");
 #endif
+  thread_ = [this] {
+    std::array<struct epoll_event, EPOLL_MAX> events{};
+
+    int ec = epoll_wait(efd_, events.data(), EPOLL_MAX, -1);
+    if (ec > 0) {
+      for (auto i = 0; i < ec; i++) {
+        if (events[i].data.fd != nl_socket_get_fd(ev_sock_) || nl_recvmsgs_default(ev_sock_) < 0) {
+        }
+      }
+    }
+  };
 }
 
 const std::string waybar::modules::Network::getNetworkState() const {

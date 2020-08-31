@@ -11,9 +11,7 @@
 #include <sys/epoll.h>
 #include "ALabel.hpp"
 #include "util/sleeper_thread.hpp"
-#ifdef WANT_RFKILL
 #include "util/rfkill.hpp"
-#endif
 
 namespace waybar::modules {
 
@@ -54,6 +52,8 @@ class Network : public ALabel {
   struct sockaddr_nl nladdr_ = {0};
   struct nl_sock*    sock_ = nullptr;
   struct nl_sock*    ev_sock_ = nullptr;
+  int                efd_;
+  int                ev_fd_;
   int                nl80211_id_;
   std::mutex         mutex_;
 
@@ -72,11 +72,9 @@ class Network : public ALabel {
 
   util::SleeperThread thread_;
   util::SleeperThread thread_timer_;
-#ifdef WANT_RFKILL
   util::SleeperThread thread_rfkill_;
 
   util::Rfkill rfkill_;
-#endif
 };
 
 }  // namespace waybar::modules
