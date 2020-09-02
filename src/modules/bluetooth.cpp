@@ -21,6 +21,7 @@ waybar::modules::Bluetooth::Bluetooth(const std::string& id, const Json::Value& 
 }
 
 auto waybar::modules::Bluetooth::update() -> void {
+  label_.get_style_context()->remove_class(status_);
   if (rfkill_.getState()) {
     status_ = "disabled";
   } else {
@@ -33,6 +34,8 @@ auto waybar::modules::Bluetooth::update() -> void {
         fmt::arg("status", status_),
         fmt::arg("icon", getIcon(0, status_))));
 
+  label_.get_style_context()->add_class(status_);
+
   if (tooltipEnabled()) {
     if (config_["tooltip-format"].isString()) {
       auto tooltip_format = config_["tooltip-format"].asString();
@@ -42,4 +45,6 @@ auto waybar::modules::Bluetooth::update() -> void {
       label_.set_tooltip_text(status_);
     }
   }
+
+  ALabel::update();
 }
